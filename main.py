@@ -9,7 +9,6 @@ IN_DIR = "in/"
 OUT_DIR = "out/"
 
 # TODO:
-#- XML output
 #- Parsing lacunae (▩▩▩▩▩, . . . ., etc)
 #-- if not already inside of a square bracket, surround with square brackets and replace lacuna-representing characters with periods
 #-- if the lacuna-representing characters are already within brackets, just replace with periods
@@ -41,7 +40,7 @@ def write_file(out_dir, name, lines):
 
 def write_output_files(docs, file_order, out_dir=OUT_DIR, orig_ext=".html"):
     for name, lines in zip(file_order, docs):
-        write_file(out_dir, name.replace(orig_ext, ".txt"), lines)
+        write_file(out_dir, name.replace(orig_ext, ".sgml"), lines)
 
 # HTML transformations ----------------------------------------------------------
 def html_parse(html_string):
@@ -121,10 +120,55 @@ class ManuscriptLine:
             self.page_no, self.line_no, self.text,
             (' (' + self.footnote + ')') if self.footnote else '')
 
+def filter_parsed_docs(docs):
+    return ([[line for line in doc
+              if line.page_no != "0" and line.line_no != "0"]
+             for doc in docs])
+
 # XML generation ----------------------------------------------------------------
 # note: *? is the non-greedy version of * in python regex
 FOL_PATTERN = re.compile(r"(\[fol.*?\])|(\|fol.*?\|)", re.IGNORECASE)
-PAGE_AND_COL_PATTERN = re.compile(r"[\[|]fol\.?(.*?)col\.?\s+([^\s]+?)[\]|]", re.IGNORECASE)
+PAGE_AND_COL_PATTERN = re.compile(r"[\[|]fol\.?(.*?)col\.?\s+([^\s]+?)(?:\s+.*?)?[\]|]", re.IGNORECASE)
+PAGE_PATTERN = re.compile(r"[\[|]fol\.?(.*?)[\]|]", re.IGNORECASE)
+
+def scan_for_pipe(doc, i):
+    lower_bound = max(i - 1, 0)
+    upper_bound = min(i + 2, len(doc))
+    # ensure there's at most only one pipe in the range
+    assert "".join(map(lambda x: getattr(x, "text"),
+                       doc[lower_bound:upper_bound])).count("|") <= 1
+
+    for j in range(lower_bound, upper_bound):
+        text = doc[j].text
+        pipe_index = text.find("|")
+        if pipe_index > -1:
+            return (j, pipe_index)
+
+    return (i, None)
+
+PAGE_NUM_PATTERN = re.compile(r"(\d+)([ab])\s.*")
+def decr_page_num(page_num):
+    match = PAGE_NUM_PATTERN.fullmatch(page_num)
+    assert match
+    number, alpha = match.groups()
+    if alpha == "a":
+        return str(int(number) - 1) + "b"
+    else:
+        return number + "a"
+
+def guess_first_break_info(breaks):
+    second_break = breaks[sorted(breaks.keys())[0]]
+    second_col_num = second_break["col_num"]
+    assert second_col_num in ["1", "2", None]
+
+    first_break = second_break.copy()
+    if second_col_num == "2":
+        first_break["col_num"] = "1"
+    else:
+        first_break["page_num"] = decr_page_num(first_break["page_num"])
+        first_break["col_num"] = None if second_col_num is None else "2"
+    return first_break
+
 def find_breaks(doc):
     breaks = {}
 
@@ -133,30 +177,67 @@ def find_breaks(doc):
         match = FOL_PATTERN.search(text)
         if match is None:
             continue
+        # impure!!! but convenient: remove it from the text
+        line.text = text.replace(match.groups()[0] or match.groups()[1], "")
+
         s = match.groups()[0] or match.groups()[1]
 
         match = PAGE_AND_COL_PATTERN.search(s)
         if match is None:
-            continue
-        assert len(match.groups()) == 2
-        page_num, col_num = match.groups()
+            match = PAGE_PATTERN.search(s)
+            if match is None:
+                continue
+        groups = match.groups()
+        page_num = groups[0].strip()
+        col_num = groups[1].strip() if len(groups) > 1 else None
 
-        page_num = page_num.strip()
-        col_num = col_num.strip()
-        #TODO: Find the pipe
-        breaks[i] = (page_num, col_num)
+        break_line_num, break_offset = scan_for_pipe(doc, i)
+        # don't use i because the pipe could be above or below the line
+        # on which we found the Fol. info
+        breaks[break_line_num] = {"page_num": page_num,
+                                  "col_num": col_num,
+                                  "offset": break_offset}
+
+    if 0 not in breaks:
+        breaks[0] = guess_first_break_info(breaks)
+
 
     return breaks
 
-def generate_header(nums):
-    page_num, col_num = nums
-    return '<pb n="{}"><cb n="{}">'.format(page_num, col_num)
+def insert_break(line_text, break_info, last_page):
+    assert line_text.count("|") <= 1
+    page = break_info["page_num"]
+    col = break_info["col_num"]
+    offset = break_info["offset"]
 
-def generate_footer():
-    return '</pb></cb>'
+    accum = []
+    if col is not None:
+        accum.append('</cb>')
+    if page != last_page:
+        accum.append('</pb>\n<pb xml:id="{}">'.format(page))
+    if col is not None:
+        accum.append('<cb n="{}">'.format(col))
 
-def wrap_line_with_lb(line_text):
-    return '<lb>' + line_text + '</lb>'
+    break_text = "\n" + "\n".join(accum) 
+    if offset is not None:
+        return line_text[:offset] + break_text + line_text[offset + 1:]
+    return break_text + line_text
+
+def generate_header(break_info):
+    if break_info["col_num"]:
+        return '<pb xml:id="{}">\n<cb n="{}">'.format(break_info["page_num"],
+                                               break_info["col_num"])
+    else:
+        return '<pb xml:id="{}">'.format(break_info["page_num"])
+
+def generate_footer(has_cols):
+    if has_cols:
+        return '</cb>\n</pb>'
+    else:
+        return '</pb>'
+
+def wrap_line_with_lb(line_text, i):
+    return '<lb n="{}"/>'.format(i) + line_text
 
 def generate_xml(doc):
     breaks = find_breaks(doc)
@@ -164,20 +245,22 @@ def generate_xml(doc):
 
     # take care of header
     assert 0 in breaks
-    lines.append(generate_header(breaks[0]))
+    first_break = breaks[0]
+    lines.append(generate_header(first_break))
+    last_page = breaks[0]["page_num"]
+    del breaks[0]
 
     for i, line in enumerate(doc):
-        if line.page_no == "0" or line.line_no == "0":
-            logging.debug("Skipping because page_no or line_no is 0: {}".format(repr(line)))
-            continue
-
         line_text = line.text
-        line_text = wrap_line_with_lb(line_text)
+        if i in breaks:
+            line_text = insert_break(line_text, breaks[i], last_page)
+            last_page = breaks[i]["page_num"]
+        line_text = wrap_line_with_lb(line_text, i + 1)
+        lines.append(line_text)
 
-    lines.append(generate_footer())
+    lines.append(generate_footer(first_break["col_num"] is not None))
 
     return '\n'.join(lines)
-
 
 
 # Main --------------------------------------------------------------------------
@@ -187,6 +270,7 @@ def main():
                                    html_extract_table,
                                    html_parse_rows],
                                   file_strings)
+    parsed_docs = filter_parsed_docs(parsed_docs)
     xml_strs = apply_functions([generate_xml], parsed_docs)
 
     write_output_files(xml_strs, file_order)
