@@ -12,12 +12,6 @@ LACUNA_CHARS = "▩□."
 SUP = "↑"
 SUB = "↓"
 
-# TODO:
-#- Parsing lacunae (▩▩▩▩▩, . . . ., etc)
-#-- if not already inside of a square bracket, surround with square brackets and replace lacuna-representing characters with periods
-#-- if the lacuna-representing characters are already within brackets, just replace with periods
-
-
 # File i/o ----------------------------------------------------------------------
 def read_file(in_dir, name):
     with open(os.path.join(in_dir, name), 'r') as f:
