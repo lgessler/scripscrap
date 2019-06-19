@@ -68,9 +68,9 @@ class ManuscriptLine:
     page_and_line_no_pattern = re.compile(r"\((\d+)/(\d+)\)")
     lacuna_pattern = re.compile(r"(?:[" + LACUNA_CHARS + r"](?:\s+)?){3,}|(?:▩(?:\s+)?)+")
     def __init__(self, page_and_line_no, text):
-        page_no, line_no = self._clean_page_and_line(page_and_line_no)
-        self.page_no = page_no
-        self.line_no = line_no
+        ed_page, ed_line = self._clean_page_and_line(page_and_line_no)
+        self.ed_page = ed_page
+        self.ed_line = ed_line
         self.text = self._clean_text(text)
 
     def _clean_page_and_line(self, page_and_line_no):
@@ -123,20 +123,20 @@ class ManuscriptLine:
         return text
 
     def __repr__(self):
-        return ("<ManuscriptLine; page_no={}, line_no={}, text='{}', footnote='{}'>"
-                .format(self.page_no,
-                        self.line_no,
+        return ("<ManuscriptLine; ed_page={}, line_no={}, text='{}', footnote='{}'>"
+                .format(self.ed_page,
+                        self.ed_line,
                         self.text,
                         (' (' + self.footnote + ')') if self.footnote else ''))
 
     def __str__(self):
         return "<Line ({}/{}): '{}'{}>".format(
-            self.page_no, self.line_no, self.text,
+            self.ed_page, self.ed_line, self.text,
             (' (' + self.footnote + ')') if self.footnote else '')
 
 def filter_parsed_docs(docs):
     return ([[line for line in doc
-              if line.page_no != "0" and line.line_no != "0"]
+              if line.ed_page != "0" and line.ed_line != "0"]
              for doc in docs])
 
 # XML generation ----------------------------------------------------------------
@@ -206,16 +206,14 @@ def find_breaks(doc):
         page_num = groups[0].strip()
         col_num = groups[1].strip() if len(groups) > 1 else None
 
-        break_line_num, break_offset = scan_for_pipe(doc, i)
+        break_line_num, _ = scan_for_pipe(doc, i)
         # don't use i because the pipe could be above or below the line
         # on which we found the Fol. info
         breaks[break_line_num] = {"page_num": page_num,
-                                  "col_num": col_num,
-                                  "offset": break_offset}
+                                  "col_num": col_num}
 
     if 0 not in breaks:
         breaks[0] = guess_first_break_info(breaks)
-
 
     return breaks
 
@@ -223,7 +221,7 @@ def insert_break(text, break_info, last_page):
     assert text.count("|") <= 1
     page = break_info["page_num"]
     col = break_info["col_num"]
-    offset = break_info["offset"]
+    offset = text.find("|")
 
     accum = []
     if col is not None:
@@ -233,8 +231,8 @@ def insert_break(text, break_info, last_page):
     if col is not None:
         accum.append('<cb n="{}">'.format(col))
 
-    break_text = "\n" + "\n".join(accum)
-    if offset is not None:
+    break_text = "\n".join(accum)
+    if offset > -1:
         return text[:offset] + break_text + text[offset + 1:]
     return break_text + text
 
@@ -250,9 +248,6 @@ def generate_footer(has_cols):
         return '</cb>\n</pb>'
     else:
         return '</pb>'
-
-def wrap_line_with_lb(text, i):
-    return '<lb n="{}"/>'.format(i) + text
 
 def find_symbols(docs):
     lines = sum([[line.text for line in doc] for doc in docs], [])
@@ -284,9 +279,9 @@ def wrap_line_if_decorative(orig_text, xml_text, symbols):
                     + xml_text[open_index:close_index]
                     + '</hi>'
                     + xml_text[close_index:])
-        # we have an <lb/>
+        # we have an <ed_line/>
         elif close_index == -1 and open_index != -1:
-            assert "<lb" in xml_text
+            assert "<ed_line" in xml_text
             open_index += 1
             return (xml_text[:open_index]
                     + '<hi rend="decorative">'
@@ -325,6 +320,20 @@ def wrap_consecutive_spans(xml_text, char, eltname):
 
     return xml_text
 
+def insert_ed_page_break(xml_text, ed_page):
+    #offset = xml_text.rfind("\n")
+    #offset = offset if offset > -1 else 0
+    elt = '\n<ed_page n="{}"/>\n'.format(ed_page)
+    offset = 0
+    return xml_text[:offset] + elt + xml_text[offset:]
+
+def insert_ed_line_break(xml_text, i):
+    #offset = xml_text.rfind("\n")
+    #offset = offset if offset > -1 else 0
+    elt = '<ed_line n="{}"/>'.format(i)
+    offset = 0
+    return xml_text[:offset] + elt + xml_text[offset:]
+
 def generate_xml(doc, decorative_symbols):
     breaks = find_breaks(doc)
     lines = []
@@ -335,17 +344,24 @@ def generate_xml(doc, decorative_symbols):
     lines.append(generate_header(first_break))
     last_page = breaks[0]["page_num"]
     del breaks[0]
+    last_ed_page = None
 
     for i, line in enumerate(doc):
         orig_text = line.text
+
         xml_text = line.text
+        xml_text = insert_ed_line_break(xml_text, line.ed_line)
+        #xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
+        xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
+        xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
+        if line.ed_page != last_ed_page:
+            xml_text = insert_ed_page_break(xml_text, line.ed_page)
+            last_ed_page = line.ed_page
+
         if i in breaks:
             xml_text = insert_break(xml_text, breaks[i], last_page)
             last_page = breaks[i]["page_num"]
-        xml_text = wrap_line_with_lb(xml_text, i + 1)
-        xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
-        xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
-        xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
+
         lines.append(xml_text)
 
     lines.append(generate_footer(first_break["col_num"] is not None))
