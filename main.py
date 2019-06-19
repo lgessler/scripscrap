@@ -3,7 +3,7 @@
 import re
 import os
 import logging
-import unicodedata
+from unicodedata import category
 from bs4 import BeautifulSoup
 
 IN_DIR = "in/"
@@ -98,10 +98,13 @@ class ManuscriptLine:
         else:
             self.footnote = None
         text = self._bracket_lacunae(text)
+        text = self._remove_dash_or_add_space(text)
+        text = self._space_punctuation(text)
         return text
 
     def _bracket_lacunae(self, text):
         lacunae = list(ManuscriptLine.lacuna_pattern.finditer(text))
+
         if len(lacunae) == 0:
             return text
         if text == "□□□ Ⲁ □□□ Ⲱ̅ □□□□ Ⲓ̅Ⲥ̅ □✠□ Ⲭ̅Ⲥ̅":
@@ -115,6 +118,24 @@ class ManuscriptLine:
             text = (text[:start] + "[" + ("."*(end - start)) + "]" + text[end:])
 
         return text
+
+    def _remove_dash_or_add_space(self, text):
+        if len(text) == 0:
+            return text
+        if text[-1] in ["‐", "-"]:
+            return text[:-1]
+        else:
+            return text + " "
+
+    def _space_punctuation(self, text):
+        for i, c in reversed(list(enumerate(text))):
+            if (i != 0 and category(c)[0] == "P"
+                and c not in ["[", "]", "-", "‐", "|", "{", "}", "(", ")", "?"]
+                and ((category(text[i-1])[0] in ["L", "M"] and ord(text[i-1][0]) >= 128)
+                     or text[i-1][0] in [")"])):
+                text = text[:i] + " " + text[i:]
+        return text
+
 
     def __repr__(self):
         return ("<ManuscriptLine; ed_page={}, line_no={}, text='{}', footnote='{}'>"
@@ -219,7 +240,7 @@ def insert_break(text, break_info, last_page):
 
     accum = []
     if col is not None:
-        accum.append('</cb>')
+        accum.append('\n</cb>')
     if page != last_page:
         accum.append('</pb>\n<pb xml:id="{}">'.format(page))
     if col is not None:
@@ -249,7 +270,7 @@ def find_symbols(docs):
 
     symbols = []
     for c in s:
-        cat = unicodedata.category(c)
+        cat = category(c)
         if (cat[0] in ["S", "C"] or c in ["·", "—", "—"]) \
            and c not in symbols \
            and c not in LACUNA_CHARS:
@@ -261,7 +282,7 @@ def wrap_line_if_decorative(orig_text, xml_text, symbols):
     if len(orig_text) == 0:
         return xml_text
     masked_dec = [1 if c in symbols else 0 for c in orig_text]
-    masked_let = [1 if unicodedata.category(c)[0] == "L" else 0 for c in orig_text]
+    masked_let = [1 if category(c)[0] == "L" else 0 for c in orig_text]
     if sum(masked_dec)/len(masked_dec) > .2 and not sum(masked_let)/len(masked_let) > .2:
         close_index = xml_text.find("</")
         open_index = xml_text.rfind(">", 0, close_index)
@@ -314,18 +335,15 @@ def wrap_consecutive_spans(xml_text, char, eltname):
 
     return xml_text
 
-def insert_ed_page_break(xml_text, ed_page):
-    #offset = xml_text.rfind("\n")
-    #offset = offset if offset > -1 else 0
-    elt = '\n<ed_page n="{}"/>\n'.format(ed_page)
-    offset = 0
+def insert_ed_page_break(xml_text, orig_text, ed_page):
+    offset = xml_text.rfind(orig_text)
+    offset = offset if offset > -1 else 0
+    elt = '<ed_page n="{}"/>\n'.format(ed_page)
     return xml_text[:offset] + elt + xml_text[offset:]
 
-def insert_ed_line_break(xml_text, i):
-    #offset = xml_text.rfind("\n")
-    #offset = offset if offset > -1 else 0
+def insert_ed_line_break(xml_text, orig_text, i):
+    offset = xml_text.rfind(orig_text)
     elt = '<ed_line n="{}"/>'.format(i)
-    offset = 0
     return xml_text[:offset] + elt + xml_text[offset:]
 
 def generate_xml(doc, decorative_symbols):
@@ -342,15 +360,16 @@ def generate_xml(doc, decorative_symbols):
 
     for i, line in enumerate(doc):
         orig_text = line.text
-
         xml_text = line.text
-        xml_text = insert_ed_line_break(xml_text, line.ed_line)
+
+        if line.ed_page != last_ed_page:
+            xml_text = insert_ed_page_break(xml_text, orig_text, line.ed_page)
+            last_ed_page = line.ed_page
+
+        xml_text = insert_ed_line_break(xml_text, orig_text, line.ed_line)
         #xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
         xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
         xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
-        if line.ed_page != last_ed_page:
-            xml_text = insert_ed_page_break(xml_text, line.ed_page)
-            last_ed_page = line.ed_page
 
         if i in breaks:
             xml_text = insert_break(xml_text, breaks[i], last_page)
