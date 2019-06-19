@@ -3,23 +3,19 @@
 import re
 import os
 import logging
+import unicodedata
 from bs4 import BeautifulSoup
 
 IN_DIR = "in/"
 OUT_DIR = "out/"
+LACUNA_CHARS = "▩□."
+SUP = "↑"
+SUB = "↓"
 
 # TODO:
 #- Parsing lacunae (▩▩▩▩▩, . . . ., etc)
 #-- if not already inside of a square bracket, surround with square brackets and replace lacuna-representing characters with periods
 #-- if the lacuna-representing characters are already within brackets, just replace with periods
-#- Parsing decoration (═════ :::: ═════ :::: ═════ :::: ═════)
-#- footnote: note element
-#- Parsing |Fol. 5b|
-#-- Fol.s: if pipes are present, find it in the neighborhood, in a text like resurrection make sure it actually makes sense to put it where we think it goes
-#- superscript: ↑, characterwise before the supped character, also ↓
-#-
-#- later: doc splitting
-#-
 
 
 # File i/o ----------------------------------------------------------------------
@@ -70,6 +66,7 @@ def apply_functions(fs, data):
 # Parsed lines ------------------------------------------------------------------
 class ManuscriptLine:
     page_and_line_no_pattern = re.compile(r"\((\d+)/(\d+)\)")
+    lacuna_pattern = re.compile(r"(?:[" + LACUNA_CHARS + r"](?:\s+)?){3,}|(?:▩(?:\s+)?)+")
     def __init__(self, page_and_line_no, text):
         page_no, line_no = self._clean_page_and_line(page_and_line_no)
         self.page_no = page_no
@@ -106,6 +103,23 @@ class ManuscriptLine:
             self.footnote = footnote
         else:
             self.footnote = None
+        text = self._bracket_lacunae(text)
+        return text
+
+    def _bracket_lacunae(self, text):
+        lacunae = list(ManuscriptLine.lacuna_pattern.finditer(text))
+        if len(lacunae) == 0:
+            return text
+        if text == "□□□ Ⲁ □□□ Ⲱ̅ □□□□ Ⲓ̅Ⲥ̅ □✠□ Ⲭ̅Ⲥ̅":
+            return text
+
+        for match in reversed(lacunae):
+            start, end = match.span()
+            if start != 0 and text[start - 1] == "[" \
+               and end != len(text) and text[end + 1] == "]":
+                text = (text[:start] + ("."*(end - start)) + text[end:])
+            text = (text[:start] + "[" + ("."*(end - start)) + "]" + text[end:])
+
         return text
 
     def __repr__(self):
@@ -128,7 +142,8 @@ def filter_parsed_docs(docs):
 # XML generation ----------------------------------------------------------------
 # note: *? is the non-greedy version of * in python regex
 FOL_PATTERN = re.compile(r"(\[fol.*?\])|(\|fol.*?\|)", re.IGNORECASE)
-PAGE_AND_COL_PATTERN = re.compile(r"[\[|]fol\.?(.*?)col\.?\s+([^\s]+?)(?:\s+.*?)?[\]|]", re.IGNORECASE)
+PAGE_AND_COL_PATTERN = \
+    re.compile(r"[\[|]fol\.?(.*?)col\.?\s+([^\s]+?)(?:\s+.*?)?[\]|]", re.IGNORECASE)
 PAGE_PATTERN = re.compile(r"[\[|]fol\.?(.*?)[\]|]", re.IGNORECASE)
 
 def scan_for_pipe(doc, i):
@@ -204,8 +219,8 @@ def find_breaks(doc):
 
     return breaks
 
-def insert_break(line_text, break_info, last_page):
-    assert line_text.count("|") <= 1
+def insert_break(text, break_info, last_page):
+    assert text.count("|") <= 1
     page = break_info["page_num"]
     col = break_info["col_num"]
     offset = break_info["offset"]
@@ -218,10 +233,10 @@ def insert_break(line_text, break_info, last_page):
     if col is not None:
         accum.append('<cb n="{}">'.format(col))
 
-    break_text = "\n" + "\n".join(accum) 
+    break_text = "\n" + "\n".join(accum)
     if offset is not None:
-        return line_text[:offset] + break_text + line_text[offset + 1:]
-    return break_text + line_text
+        return text[:offset] + break_text + text[offset + 1:]
+    return break_text + text
 
 def generate_header(break_info):
     if break_info["col_num"]:
@@ -236,10 +251,81 @@ def generate_footer(has_cols):
     else:
         return '</pb>'
 
-def wrap_line_with_lb(line_text, i):
-    return '<lb n="{}"/>'.format(i) + line_text
+def wrap_line_with_lb(text, i):
+    return '<lb n="{}"/>'.format(i) + text
 
-def generate_xml(doc):
+def find_symbols(docs):
+    lines = sum([[line.text for line in doc] for doc in docs], [])
+    s = "".join(lines)
+
+    symbols = []
+    for c in s:
+        cat = unicodedata.category(c)
+        if (cat[0] in ["S", "C"] or c in ["·", "—", "—"]) \
+           and c not in symbols \
+           and c not in LACUNA_CHARS:
+            symbols.append(c)
+
+    return symbols
+
+def wrap_line_if_decorative(orig_text, xml_text, symbols):
+    if len(orig_text) == 0:
+        return xml_text
+    masked_dec = [1 if c in symbols else 0 for c in orig_text]
+    masked_let = [1 if unicodedata.category(c)[0] == "L" else 0 for c in orig_text]
+    if sum(masked_dec)/len(masked_dec) > .2 and not sum(masked_let)/len(masked_let) > .2:
+        close_index = xml_text.find("</")
+        open_index = xml_text.rfind(">", 0, close_index)
+        # we have the text within a binary tag
+        if open_index > -1 and close_index > -1:
+            open_index += 1
+            return (xml_text[:open_index]
+                    + '<hi rend="decorative">'
+                    + xml_text[open_index:close_index]
+                    + '</hi>'
+                    + xml_text[close_index:])
+        # we have an <lb/>
+        elif close_index == -1 and open_index != -1:
+            assert "<lb" in xml_text
+            open_index += 1
+            return (xml_text[:open_index]
+                    + '<hi rend="decorative">'
+                    + xml_text[open_index:]
+                    + '</hi>')
+        # no tag
+        else:
+            assert open_index == -1 and close_index == -1
+            return '<hi rend="decorative">' + xml_text + '</hi>'
+    return xml_text
+
+# For <sup> and <sub>
+def wrap_consecutive_spans(xml_text, char, eltname):
+    mask = [1 if c == char else 0 for c in xml_text]
+    if sum(mask) == 0:
+        return xml_text
+
+    open_tag = "<{}>".format(eltname)
+    close_tag = "</{}>".format(eltname)
+    for i in range(len(mask), 0, -1):
+        if mask[i - 1] == 1:
+            mask.pop(i)
+
+    xml_text = xml_text.replace(char, "")
+    end = None
+    for i, bit in reversed(list(enumerate(['START'] + mask))):
+        if bit == 1 and not end:
+            end = i
+        elif end and bit == 0:
+            xml_text = (xml_text[:i]
+                        + open_tag
+                        + xml_text[i:end]
+                        + close_tag
+                        + xml_text[end:])
+            end = None
+
+    return xml_text
+
+def generate_xml(doc, decorative_symbols):
     breaks = find_breaks(doc)
     lines = []
 
@@ -251,16 +337,21 @@ def generate_xml(doc):
     del breaks[0]
 
     for i, line in enumerate(doc):
-        line_text = line.text
+        orig_text = line.text
+        xml_text = line.text
         if i in breaks:
-            line_text = insert_break(line_text, breaks[i], last_page)
+            xml_text = insert_break(xml_text, breaks[i], last_page)
             last_page = breaks[i]["page_num"]
-        line_text = wrap_line_with_lb(line_text, i + 1)
-        lines.append(line_text)
+        xml_text = wrap_line_with_lb(xml_text, i + 1)
+        xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
+        xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
+        xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
+        lines.append(xml_text)
 
     lines.append(generate_footer(first_break["col_num"] is not None))
 
     return '\n'.join(lines)
+
 
 
 # Main --------------------------------------------------------------------------
@@ -271,10 +362,9 @@ def main():
                                    html_parse_rows],
                                   file_strings)
     parsed_docs = filter_parsed_docs(parsed_docs)
-    xml_strs = apply_functions([generate_xml], parsed_docs)
-
+    decorative_symbols = find_symbols(parsed_docs)
+    xml_strs = [generate_xml(doc, decorative_symbols) for doc in parsed_docs]
     write_output_files(xml_strs, file_order)
-
 
 if __name__ == "__main__":
     main()
