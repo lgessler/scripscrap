@@ -98,7 +98,6 @@ class ManuscriptLine:
         else:
             self.footnote = None
         text = self._bracket_lacunae(text)
-        text = self._remove_dash_or_add_space(text)
         text = self._space_punctuation(text)
         return text
 
@@ -118,14 +117,6 @@ class ManuscriptLine:
             text = (text[:start] + "[" + ("."*(end - start)) + "]" + text[end:])
 
         return text
-
-    def _remove_dash_or_add_space(self, text):
-        if len(text) == 0:
-            return text
-        if text[-1] in ["‐", "-"]:
-            return text[:-1]
-        else:
-            return text + " "
 
     def _space_punctuation(self, text):
         for i, c in reversed(list(enumerate(text))):
@@ -160,6 +151,15 @@ FOL_PATTERN = re.compile(r"(\[fol.*?\])|(\|fol.*?\|)", re.IGNORECASE)
 PAGE_AND_COL_PATTERN = \
     re.compile(r"[\[|]fol\.?(.*?)col\.?\s+([^\s]+?)(?:\s+.*?)?[\]|]", re.IGNORECASE)
 PAGE_PATTERN = re.compile(r"[\[|]fol\.?(.*?)[\]|]", re.IGNORECASE)
+
+def remove_dash_or_add_space(text):
+    text = text.strip()
+    if len(text) == 0:
+        return text
+    if text[-1] in ["‐", "-"]:
+        return text[:-1]
+    else:
+        return text + " "
 
 def scan_for_pipe(doc, i):
     lower_bound = max(i - 1, 0)
@@ -359,8 +359,8 @@ def generate_xml(doc, decorative_symbols):
     last_ed_page = None
 
     for i, line in enumerate(doc):
-        orig_text = line.text
-        xml_text = line.text
+        orig_text = remove_dash_or_add_space(line.text)
+        xml_text = orig_text
 
         if line.ed_page != last_ed_page:
             xml_text = insert_ed_page_break(xml_text, orig_text, line.ed_page)
