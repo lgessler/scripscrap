@@ -346,6 +346,30 @@ def insert_ed_line_break(xml_text, orig_text, i):
     elt = '<ed_line n="{}"/>'.format(i)
     return xml_text[:offset] + elt + xml_text[offset:]
 
+def sic_to_note(xml_text):
+    i = xml_text.find("(sic)")
+    if i == -1:
+        return xml_text
+
+    while i != -1:
+        l = 5
+        if xml_text[i-1] == " ":
+            l = 6
+            i -= 1
+        xml_text = xml_text[:i] + xml_text[i+l:]
+
+        start = xml_text.rfind(" ", 0, i) + 1
+        assert start > 0
+        xml_text = (xml_text[:start]
+                    + '<note note="sic">'
+                    + xml_text[start:i]
+                    + '</note>'
+                    + xml_text[i:])
+
+        i = xml_text.find("(sic)")
+
+    return xml_text
+
 def generate_xml(doc, decorative_symbols):
     breaks = find_breaks(doc)
     lines = []
@@ -370,6 +394,7 @@ def generate_xml(doc, decorative_symbols):
         #xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
         xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
         xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
+        xml_text = sic_to_note(xml_text)
 
         if i in breaks:
             xml_text = insert_break(xml_text, breaks[i], last_page)
