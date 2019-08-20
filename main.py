@@ -14,7 +14,7 @@ SUB = "↓"
 
 # File i/o ----------------------------------------------------------------------
 def read_file(in_dir, name):
-    with open(os.path.join(in_dir, name), 'r') as f:
+    with open(os.path.join(in_dir, name), 'r',encoding="utf8") as f:
         return f.read()
 
 def read_input_files(in_dir=IN_DIR, ext=".html"):
@@ -25,7 +25,7 @@ def read_input_files(in_dir=IN_DIR, ext=".html"):
             file_order)
 
 def write_file(out_dir, name, lines):
-    with open(os.path.join(out_dir, name), 'w') as f:
+    with open(os.path.join(out_dir, name), 'w', encoding="utf8", newline="\n") as f:
         return f.write(lines)
 
 def write_output_files(docs, file_order, out_dir=OUT_DIR, orig_ext=".html"):
@@ -219,6 +219,7 @@ def find_breaks(doc):
                 continue
         groups = match.groups()
         page_num = groups[0].strip()
+        page_num = re.sub(r'\(.*\)','',page_num).strip()
         col_num = groups[1].strip() if len(groups) > 1 else None
 
         break_line_num, _ = scan_for_pipe(doc, i)
@@ -359,6 +360,10 @@ def sic_to_note(xml_text):
         xml_text = xml_text[:i] + xml_text[i+l:]
 
         start = xml_text.rfind(" ", 0, i) + 1
+        # Prevent pushing the sic note into XML tags
+        last_angle = xml_text.rfind(">", 0, i) + 1
+        if last_angle > start:
+            start = last_angle
         assert start > 0
         xml_text = (xml_text[:start]
                     + '<note note="sic">'
@@ -368,6 +373,32 @@ def sic_to_note(xml_text):
 
         i = xml_text.find("(sic)")
 
+    return xml_text
+
+def square_to_ekthetic(xml_text):
+    i = xml_text.find("□")
+    if i == -1:
+        return xml_text
+    # Protect double squares, which are decorations
+    xml_text = xml_text.replace("□□","⸋⸋")
+    # Transform other squares to ekthetic annotations
+    xml_text = re.sub(r'□\s*([^<>\s]+)',r'<hi rend="ekthetic">\1</hi>',xml_text)
+
+    return xml_text
+
+def remove_english_comments(xml_text):
+    # Remove things like '[Three leaves wanting]'
+    xml_text = re.sub(r'\[([A-Za-z ]+)\]',r'<note note="\1"></note>',xml_text)
+    # Remove left-over pipes
+    xml_text = re.sub(r'\s*\|\s*',' ',xml_text)
+    # Superscript glyph
+    xml_text = xml_text.replace("¹","")
+    # Remaining lines with Fol. (only one instance, in Theophilus)
+    xml_text = re.sub(r'Fol\.[^\n]+','',xml_text)
+    # Decorative angle brackets (three instances)
+    xml_text = xml_text.replace(" >"," ❭")
+    # Single spaces
+    xml_text = re.sub(r' +',' ',xml_text)
     return xml_text
 
 def generate_xml(doc, decorative_symbols):
@@ -394,7 +425,9 @@ def generate_xml(doc, decorative_symbols):
         #xml_text = wrap_line_if_decorative(orig_text, xml_text, decorative_symbols)
         xml_text = wrap_consecutive_spans(xml_text, SUP, "sup")
         xml_text = wrap_consecutive_spans(xml_text, SUB, "sub")
+        xml_text = square_to_ekthetic(xml_text)
         xml_text = sic_to_note(xml_text)
+        xml_text = remove_english_comments(xml_text)
 
         if i in breaks:
             xml_text = insert_break(xml_text, breaks[i], last_page)
